@@ -1,0 +1,26 @@
+{
+    "id": "A4AB35C5",
+    "path": "C:/GitHub/Public_Portfolio/data_quality/alert_all.R",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "2544488905",
+    "contents": "",
+    "dirty": false,
+    "created": 1758265629682.0,
+    "source_on_save": false,
+    "relative_order": 5,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "9,41",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1758267161,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1758267161929,
+    "read_only": false,
+    "read_only_alternatives": []
+}

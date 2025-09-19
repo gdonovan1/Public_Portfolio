@@ -1,0 +1,220 @@
+---
+title: "VisNetwork Flow Diagram Markdown"
+subtitle: "Data Source: `r params$datasource`"
+date: "`r Sys.Date()`"
+output: html_document
+params:
+  datasource_df: NULL
+  datasource: "ALL"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE)
+
+# Import dataframe based on input parameter. If running interactively, then import from setup script
+metadata_df <- if (!is.null(params$datasource_df)) {
+  params$datasource_df
+} else {
+  message("Running interactively with full metadata_df0")
+  metadata_df0 %>% filter(!data_source %in% grepl("/", unique(data_source)))
+}
+
+# Create standardized "to" and "from" fields for table relationships,
+# applying special formatting rules and removing duplicates.
+metadata_df <- metadata_df %>%
+  mutate(
+    # Construct "to" field
+    to = case_when(
+      # For special schemas, use dot separator(customize these as needed)
+      grepl("ai_|lhj|COVID_Staging", schema) ~ paste(schema, table, sep = "."),
+      # If parent_table is missing, set to NA
+      is.na(parent_table) ~ NA,
+      # Otherwise, use pipe separator
+      TRUE ~ paste(schema, table, sep = " | ")
+    ),
+    # Construct "from" field
+    from = case_when(
+      # For special schemas, use dot separator (customize these as needed)
+      grepl("ai_|lhj|COVID_Staging", parent_schema) ~ paste(parent_schema, parent_table, sep = "."),
+      # If parent_table is missing, set to NA
+      is.na(parent_table) ~ NA,
+      # Otherwise, use pipe separator
+      TRUE ~ paste(parent_schema, parent_table, sep = " | ")
+    )
+  ) %>% 
+  # Ensure rows are unique
+  distinct()
+
+# Set up nodes for network visualization.
+# 
+# Each node represents a table, standardized from both "to" and "from" fields.
+# We assign groups, levels, and unique IDs to control how the network is drawn.
+# 
+# NOTE: A custom ordering is applied below because Visnetwork is not quite as good 
+#       at organizing hierarchies in more complex scenarios. 
+#       It's nice to have a standard hierarchical placement for certain schemas.
+
+nodes_vis <- metadata_df %>%
+  # Get unique "to" nodes
+  distinct(to, schema, directory, script, data_source) %>%
+  rename(label = to) %>%
+  # Append unique "from" nodes
+  bind_rows(
+    distinct(metadata_df, from, parent_schema, parent_directory, script, data_source) %>% 
+      filter(!is.na(from)) %>%
+      rename(label = from, schema = parent_schema, directory = parent_directory)
+  ) %>%
+  # Assign groups (based on data_source) and hierarchical levels (based on schema)
+  mutate(
+    group = factor(data_source, levels = unique(data_source)),
+    level = case_when(
+      schema == "raw"     ~ 2,
+      schema %in% "staging" ~ 3,
+      schema %in% "prod"    ~ 4,
+      schema %in% "output"  ~ 5,
+      TRUE ~ 1   # fallback for any unexpected schemas
+    )
+  ) %>%
+  arrange(group, script, schema) %>%
+  # NOTE: if a table exists in multiple data sources, group is taken
+  #       from the first occurrence in data_source order
+  distinct(label, schema, .keep_all = TRUE) %>% 
+  # Assign unique IDs for visualization
+  mutate(id = seq(1, nrow(.))) %>% 
+  # Keep only necessary fields for network visualization
+  select(id, label, group, schema, directory, level)
+
+# 
+edges_vis0 <- metadata_df %>%
+  filter(!is.na(to) & !is.na(from)) %>%
+  mutate(url = script_url,
+         label = script) %>%
+  select(from, to, url, script, label)
+
+# Iteratively update levels using dependencies
+for (i in 1:12) {  # Limit iterations to avoid infinite loops
+  edges_vis <- edges_vis0 %>%
+    left_join(nodes_vis %>% select(label, id, level) %>% distinct(), by = c("from" = "label")) %>%
+    rename(from_id = id, from_level = level) %>%
+    left_join(nodes_vis %>% select(label, id, level) %>% distinct(), by = c("to" = "label")) %>%
+    rename(to_id = id, to_level = level) %>%
+    mutate(from_label = from,
+           from = from_id,
+           to = to_id,
+           title = paste("Script/Report:", label)) %>%
+    select(from, to, label, script, title, url, from_level)
+
+  nodes_vis <- nodes_vis %>%
+    left_join(edges_vis %>% filter(!to == from) %>% 
+                            select(to, from_level) %>% 
+                            group_by(to) %>% 
+                            slice_max(from_level, n = 1, with_ties = FALSE)
+        , by = c("id" = "to")) %>%
+    mutate(level = ifelse(!schema %in% c("archive"), pmax(level, (from_level + 1), na.rm = TRUE), level)) %>%
+    select(-from_level)
+}
+
+# Generate a color and shape for all unique data sources - enough for 22 data sources for now
+shapes <- c("box", "dot", "diamond", "triangle", "hexagon", "star", "square")
+icons <- c("f0db", "f080", "f047", "f13d", "f0f3", "f206", "f0c2",
+           "f02d", "f0b1", "f1b2", "f1c0", "f055", "f185",
+           "f1b9", "f188", "f14e", "f06e", "f043")
+
+df_mapping <- nodes_vis %>%
+  distinct(group) %>%
+  mutate(color = rainbow_hcl(n_distinct(group)),
+         shape = ifelse(row_number() > length(shapes), "icon", shapes[row_number()]),
+         icon.code = ifelse(shape == "icon", icons[row_number() %% length(icons) + 1], NA),
+         icon.color = ifelse(shape == "icon", color, NA))
+
+# Final cleanup and sorting
+nodes_vis <- nodes_vis %>%
+  left_join(edges_vis %>% select(from, to),
+            by = c("id" = "from")) %>% 
+  arrange(group, level, to) %>% 
+  select(id, label, group, level, directory, schema) %>% 
+  distinct() %>% 
+  # Set up node titles from data source, table name, and source script
+  left_join(edges_vis %>% 
+                  select(to, script) %>% 
+                  group_by(to) %>% 
+                  arrange(desc(script)) %>% # for WA Health archive loop specifically
+                  slice(1),
+            by = c("id" = "to")) %>% 
+  mutate(label = str_wrap(label, width = 25),
+         title = paste0("Table: ", label,
+                        "<br>Directory: ", directory,
+                        "<br>Source Script/Report: ", script,
+                        "<br>Data Source: ", group
+                        )) %>% 
+  # join in generated color and shape vars
+  left_join(df_mapping, by = "group") %>% 
+  select(-c(script, directory))
+
+# Set up edges for network visualization.
+# Each edge represents a process between nodes
+# usually a script that creates one table output from an input
+edges_vis <- edges_vis %>%
+  select(from, to
+         , label
+         , url, title)
+
+legend_items <- bind_rows(
+  distinct(nodes_vis, group, shape, color, icon.code, icon.color) %>%
+    mutate(label = paste0("Data Source:\n", gsub("(.{12,}?)\\s", "\\1\n", group)),  # Force line break every ~15 chars
+           group = "Data Source")
+)
+
+  
+```
+```{r network, echo=FALSE, out.width="130%", out.height="900px"}
+
+# Generate interactive visNetwork diagram
+diagram <- visNetwork(nodes_vis, edges_vis, width = "130%", height = "900px") %>%
+  visNodes(font = list(size = 14, face = "verdana"),
+           scaling = list(label = list(drawThreshold = 0))) %>% 
+  visEdges(arrows = "to", color = list(color = "black", highlight = "red", hover = "red"),
+           font = list(size = 12, align = "middle", background = "white", face = "verdana"),
+           smooth = list(enabled = TRUE, type = "discrete"),
+           scaling = list(label = list(drawThreshold = 0))) %>%
+  visOptions(highlightNearest = list(enabled = T, degree = 8, hover = T, 
+                                     algorithm = "hierarchical"), 
+             nodesIdSelection = TRUE) %>% 
+  visInteraction(navigationButtons = TRUE, 
+                 zoomView = TRUE, 
+                 dragNodes = TRUE, 
+                 dragView = TRUE, 
+                 hover = TRUE, 
+                 selectConnectedEdges = FALSE, #because this links nodes to edge url
+                 tooltipDelay = 200) %>%
+  visPhysics(stabilization = TRUE, hierarchicalRepulsion = list(nodeDistance = 150)) %>%
+  visHierarchicalLayout(
+    direction = "LR", 
+    sortMethod = "directed",
+    levelSeparation = 300, 
+    nodeSpacing = 10,
+    blockShifting = TRUE,    
+    edgeMinimization = TRUE, 
+  ) %>%
+  visLayout(randomSeed = 12) %>% 
+  visConfigure(enabled = TRUE) %>%
+  visEvents(selectEdge = "function(properties) {
+    var edge = this.body.data.edges.get(properties.edges[0]);
+    if (edge.url) { window.open(edge.url, '_blank'); }
+  }") %>% 
+  visExport(type = "png", name = "network") %>% 
+  addFontAwesome()
+
+if (params$datasource == "ALL") {
+  diagram <- diagram %>%
+    visLegend(useGroups = FALSE, addNodes = legend_items, position = "right",
+              ncol = 2, main = list(text = "Node Legend"), width = 0.3, stepX = 150, stepY = 110) %>%
+    visOptions(highlightNearest = list(enabled = T, degree = 8, hover = T,
+                                     algorithm = "hierarchical"),
+             nodesIdSelection = TRUE, selectedBy = "group")
+}
+
+diagram
+```
+
+

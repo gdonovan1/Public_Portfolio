@@ -1,0 +1,774 @@
+# Header --------------------------------------------
+# - Common utility functions used by data systems team for many ETL processes
+
+# Author --------------------------------------------
+# -Lawrence Lee
+# -Contributions by Grant Donovan, Katrin Fabian, Alisha Yamanaka
+
+# Purpose:
+# Create utilities that can be used across different scripts
+#
+
+# General Purpose Utilities-----------------------------
+
+  # not_in : negates in
+`%not_in%` <- Negate(`%in%`)
+
+
+  # ut_run_script : runs script with echo on for log
+ut_run_script <- function(path
+                          , script_name) {
+  time_start <- Sys.time()
+  
+  source(paste0(path, script_name)
+         , echo = T
+         , max.deparse.length = Inf)
+  
+  print(script_name)
+  return(Sys.time() - time_start)
+}
+
+
+
+
+# SQL server Utilities--------------------------------------
+
+  # ut_sql_check_table_exist : checks if a table exists
+ut_sql_check_table_exist <- function(sql_schema
+                                     , sql_table) {
+  dbExistsTable(con, SQL(paste0(sql_schema, '.', sql_table)))  
+}
+
+
+  # ut_sql_table_update_log_last
+ut_sql_table_update_log_last <- function(sql_schema
+                                         , sql_table) {
+    # If table exists already, put number of rows in n_rows_last
+  if (ut_sql_check_table_exist(sql_schema = sql_schema
+                               , sql_table = sql_table) == TRUE){
+    dbExecute(con,
+              paste0("update ai_staging.table_update_log "
+                     , "set n_rows_last = (select count(*) from "
+                     , sql_schema, ".", sql_table,") "
+                     , "where sql_schema = '", sql_schema, "' "
+                     , "and sql_table = '", sql_table,"'"))
+    # If table doesn't already exist, put NULL in n_rows_last
+  } else {
+    dbExecute(con,
+              paste0("update ai_staging.table_update_log "
+                     , "set n_rows_last = NULL "
+                     , "where sql_schema = '", sql_schema, "' "
+                     , "and sql_table = '", sql_table,"'"))
+  }
+}
+
+
+
+  # ut_sql_table_update_log_current
+ut_sql_table_update_log_current <- function(sql_schema
+                                           , sql_table) {
+  # Add row if it doesn't already exist
+  dbExecute(con,
+             paste0("insert into ai_staging.table_update_log
+                    select '", sql_schema, "', '", sql_table, "', 
+                    null, null, null
+                    where not exists 
+                    (select * from ai_staging.table_update_log
+                    where sql_schema = '", sql_schema, "' and
+                    sql_table = '", sql_table, "')"))
+  
+  # Update table_update_log
+  dbExecute(con,
+            paste0("update ai_staging.table_update_log "
+                   , "set update_time = GETDATE()"
+                   , ", n_rows = (select count(*) from "
+                   , sql_schema, ".", sql_table,") "
+                   , "where sql_schema = '", sql_schema, "' "
+                   , "and sql_table = '", sql_table,"'"))
+}
+
+
+  # ut_sql_upload : uploads table and updates table_update_log
+ut_sql_upload <- function(data
+                          , sql_schema
+                          , sql_table
+                          , test = FALSE) {
+  
+  if(test == TRUE){test_prefix <- 'zztest_'
+    }else{test_prefix <- ''}
+
+  # Update n_rows_last in table_update_log
+  ut_sql_table_update_log_last(sql_schema = sql_schema
+                               , sql_table = paste0(test_prefix,sql_table)) 
+  
+  # Upload able using dbWriteTable
+  dbWriteTable(con
+               , value = data
+               , name = Id(schema = sql_schema
+                        , table = paste0(test_prefix,sql_table))
+               , overwrite = T
+               , append = F
+               , batch_rows = 10000)
+  
+  # Update n_rows and update_time in table_update_log
+  ut_sql_table_update_log_current(sql_schema = sql_schema
+                                 , sql_table = paste0(test_prefix,sql_table))
+
+} # END FUNCTION
+
+  # ut_var_names
+ut_var_names <- function(sql_schema
+                         , sql_table){
+  dbGetQuery(con
+             , paste0("select top 1 * from "
+                      , sql_schema, ".", sql_table)) %>%
+    names()
+} # END FUNCTION
+
+
+  # ut_sql_check_drop_del_table
+ut_sql_check_drop_del_table <- function(sql_schema
+                                            , sql_table_del) {
+  
+  
+  # Check if the _del table exists, if so, drop it
+  if (ut_sql_check_table_exist(sql_schema = "ai_staging"
+                               , sql_table = sql_table_del) == TRUE){
+    
+    # Record rows in table_update_log
+    ut_sql_table_update_log_last(sql_schema = "ai_staging"
+                                 , sql_table = sql_table_del)
+    
+    # Drop table
+    dbExecute(con
+              , paste0("drop table ", "ai_staging", ".", sql_table_del))
+    
+  }
+}
+
+  # ut_sql_process
+ut_sql_process <- function(data
+                           , sql_schema
+                           , sql_table
+                           , var_date
+                           , dt_start
+                           , dt_end
+                           , vars
+                           , test = FALSE){
+  
+  if(test == TRUE){test_prefix <- 'zztest_'
+  }else{test_prefix <- ''}
+  
+  sql_table_del <- paste0(test_prefix,sql_table, "_del")
+  
+  # If table doesn't already exist, write the table directly
+  if (ut_sql_check_table_exist(sql_schema = sql_schema
+                               , sql_table = paste0(test_prefix,sql_table)) == FALSE) {
+    # Upload data
+    ut_sql_upload(data
+                  , sql_schema = sql_schema
+                  , sql_table = paste0(test_prefix,sql_table))
+    
+    
+    # If table exists and doing a full run, copy rows deleted and write the table directly
+  } else if (ut_sql_check_table_exist(sql_schema = sql_schema
+                                      , sql_table = paste0(test_prefix,sql_table)) == TRUE
+             & run_type == "FULL") {
+    # Save copy of rows to be deleted
+    # Drop _del table if it exists
+    ut_sql_check_drop_del_table(sql_schema = "ai_staging"
+                                    , sql_table_del = sql_table_del)
+    
+    # Start with all rows into _del
+    dbExecute(con
+              , paste0("select * into ", "ai_staging", ".", sql_table_del
+                       , " from ", sql_schema, ".", paste0(test_prefix,sql_table)))
+    
+    # Update table_update_log for _del
+    ut_sql_table_update_log_current(sql_schema = "ai_staging"
+                                    , sql_table = sql_table_del)
+    
+    # Upload data
+    ut_sql_upload(data
+                  , sql_schema = sql_schema
+                  , sql_table = paste0(test_prefix,sql_table))
+    
+    
+    # If table exists already and not doing a full run
+  } else if (ut_sql_check_table_exist(sql_schema = sql_schema
+                                      , sql_table = paste0(test_prefix,sql_table)) == TRUE
+             & run_type != "FULL"){
+    
+    
+    # Write processed data to ai_staging schema
+    ut_sql_upload(data
+                  , sql_schema = "ai_staging"
+                  , sql_table = paste0(paste0(test_prefix,sql_table), "_process"))
+    
+    
+    # Save copy of rows to be deleted that aren't in _process
+    # Drop _del table if it exists
+    ut_sql_check_drop_del_table(sql_schema = "ai_staging"
+                                    , sql_table_del = sql_table_del)
+    
+    # Start with all rows that are in date range
+    dbExecute(con
+              , paste0("select * into ", "ai_staging", ".", sql_table_del
+                       , " from ", sql_schema, ".", paste0(test_prefix,sql_table)
+                       , " where [", var_date, "] >= '", dt_start, "'"
+                       , " and [", var_date, "] <= '", dt_end, "'"))
+    
+    # Update table_update_log for _del
+    ut_sql_table_update_log_current(sql_schema = "ai_staging"
+                                    , sql_table = sql_table_del)
+    
+    # Record rows from existing table to table_update_log
+    ut_sql_table_update_log_last(sql_schema = sql_schema
+                                 , sql_table = paste0(test_prefix,sql_table))  
+    
+    # Delete rows from existing tables based on Date
+    dbExecute(con
+              , paste0("delete from ", sql_schema, ".", paste0(test_prefix,sql_table)
+                       , " where [", var_date, "] >= '", dt_start, "'"
+                       , " and [", var_date, "] <= '", dt_end, "'"))
+    
+    # Insert rows from processed data
+    dbExecute(con
+              , paste0("insert into ", sql_schema, ".", paste0(test_prefix,sql_table), " "
+                       , "(", toString(paste0("[", vars, "]")), ")"
+                       , " select ", toString(paste0("[", vars, "]"))
+                       , " from ", "ai_staging", ".", paste0(test_prefix,sql_table), "_process"))
+    
+    # Update table_update_log for sql_table
+    ut_sql_table_update_log_current(sql_schema = sql_schema
+                                    , sql_table = paste0(test_prefix,sql_table))
+    
+  }
+  
+}
+
+# Cleaning --------------------------------------------
+
+  # ut_replace_na_inf_with_0 
+ut_replace_na_inf_with_0 <- function(data){
+  data %>%
+    mutate_if(is.numeric
+              , ~case_when(.x == Inf|
+                             .x == -Inf|
+                             is.nan(.x)|
+                             is.na(.x) ~ 0,
+                           TRUE ~ .x))
+}
+
+
+
+  # ut_round_numeric 
+ut_round_numeric <- function(data
+                             , digits = 4){
+  data %>%
+    mutate_if(is.numeric
+              , round
+              , digits)
+}
+
+
+  # ut_clean_strings
+ut_clean_strings <- function(data){
+  data %>%
+    mutate_if(is.character
+              , ~str_replace_all(.x
+                                 , "[\\\xa0]"
+                                 ,""))
+}
+
+
+  # ut_clean_age 
+    ## Age: make < 0 or > 140 missing
+ut_clean_age <- function(data
+                         , var_age) {
+  data %>%
+    rename(tmp_age_num = all_of(var_age)) %>%
+    mutate(tmp_age_num = as.numeric(tmp_age_num)
+      , demo_age = case_when(tmp_age_num >= 0 & tmp_age_num <= 140 ~ tmp_age_num)
+      ) %>%
+    select(-tmp_age_num)
+}
+
+  # ut_clean_age_to_group 
+    ## Add an age_group column based on ref table specified and name for age group
+ut_clean_age_add_group <- function(data
+                         , ref_table_age_group
+                         , var_age_group = demo_age_group) {
+  
+  tmp_ref_demo_age_group <- dbGetQuery(con
+                                       , paste0("select *
+                                       from ", ref_table_age_group))
+  
+  tmp_age_group_breaks <- c(tmp_ref_demo_age_group$age_group_start, 140)
+  
+  tmp_age_group_labels <- tmp_ref_demo_age_group$age_group
+  
+  data %>%
+    mutate(tmp_var_age_group = cut(demo_age
+                           , breaks = tmp_age_group_breaks
+                           , include.lowest = T
+                           , right = F
+                           , labels = tmp_age_group_labels)) %>%
+    mutate(tmp_var_age_group = case_when(is.na(tmp_var_age_group) ~ 'Unknown'
+                                         , TRUE ~ as.character(tmp_var_age_group))
+           ) %>%
+    rename("{{ var_age_group }}" := tmp_var_age_group)
+    
+}
+
+
+
+  # ut_clean_sex
+    ## Sex: Join with ref.demo_sex key. Assign any NA to Unknown
+ut_clean_sex <- function(data
+                         , var_sex
+                         , ref_col) {
+  
+  tmp_ref_demo_sex <- dbGetQuery(con
+                             , "select * 
+                             from ai_ref.demo_sex") %>%
+    rename(tmp_ref_col = all_of(ref_col))
+
+  data %>%
+    rename(tmp_var_sex = all_of(var_sex)) %>%
+    left_join(tmp_ref_demo_sex
+              , by = c("tmp_var_sex" = "tmp_ref_col")) %>%
+    mutate(demo_sex = case_when(is.na(demo_sex) ~ 'Unknown'
+                           , TRUE ~ demo_sex)) %>%
+    select(-tmp_var_sex)
+}
+
+
+  # ut_clean_re
+    ## RE: Join with ref.demo_re key. Assign any NA to Unknown
+ut_clean_re <- function(data
+                         , var_re
+                         , ref_col) {
+  
+  tmp_ref_demo_re <- dbGetQuery(con
+                                 , "select * 
+                             from ai_ref.demo_re") %>%
+    rename(tmp_ref_col = all_of(ref_col))
+  
+  data %>%
+    rename(tmp_var_re = all_of(var_re)) %>%
+    left_join(tmp_ref_demo_re
+              , by = c("tmp_var_re" = "tmp_ref_col")) %>%
+    mutate(demo_re = case_when(is.na(demo_re) ~ 'Unknown'
+                                , TRUE ~ demo_re)) %>%
+    select(-tmp_var_re)
+}
+
+
+# ut_clean_re_wdrs_labs
+## RE: Join with ref.demo_re key. Assign any NA to Unknown
+ut_clean_re_wdrs_labs <- function(data
+                                 , var_re_expanded
+                                 , ref_col) {
+  
+  tmp_ref_demo_re_expanded <- dbGetQuery(con
+                                         , "select * 
+                             from ai_ref.demo_re_wdrs_labs") %>%
+    rename(tmp_ref_col = all_of(ref_col))
+  
+  data %>%
+    rename(tmp_var_re = all_of(var_re_expanded)) %>%
+    left_join(tmp_ref_demo_re_expanded
+              , by = c("tmp_var_re" = "tmp_ref_col")) %>%
+    mutate(demo_re = case_when(is.na(demo_re) ~ 'Unknown'
+                               , TRUE ~ demo_re)) %>%
+    select(-tmp_var_re)
+}
+
+
+  # ut_clean_geo
+    ## Replace NAs with 'Other/Unknown' and make character
+ut_clean_geo <- function(var) {
+  case_when(is.na(var) 
+            | var == 'None' 
+            | var == 'None/Unknown' 
+            | var == 'Unknown'
+            | var %notin% geo_ids
+            ~ 'Other/Unknown'
+            , TRUE ~ as.character(var))
+}  
+
+# ut_clean_add_geo_from_key
+## Add geo_4region variable based on zip key
+ut_add_geo_from_key <- function(data
+                                , ref_table
+                                , var_geo_in 
+                                , var_geo_out ) {
+  
+  tmp_ref_geo_key <- dbGetQuery(con
+                                , paste0("select * 
+                                         from ai_ref."
+                                         , ref_table))
+  
+  data %>%
+    mutate(geo_in = as.character({{ var_geo_in }})) %>%
+    left_join(tmp_ref_geo_key
+              , by = "geo_in") %>%
+    mutate(geo_out = case_when(is.na(geo_out) ~ 'Unknown'
+                               , TRUE ~ geo_out)) %>%
+    rename("{{ var_geo_out }}" := geo_out) %>%
+    select(-geo_in)
+  
+}
+
+
+# ut_clean_add_date_display_yr_to_yr
+## Add geo_4region variable based on zip key
+ut_clean_add_date_display_yr_to_yr <- function(data
+                                               , var_week_in) {
+  
+  tmp_ref <- dbGetQuery(con
+                        , "select * 
+                          from ai_ref.date_display_yr_to_yr") %>%
+    mutate(date_display_yr_to_yr = as.Date(date_display_yr_to_yr))
+  
+  data %>%
+    mutate(week_in = as.integer({{ var_week_in }})) %>%
+    left_join(tmp_ref
+              , by = "week_in") %>%
+    select(-week_in)
+  
+}
+
+
+
+
+# Create aggregate dataset from linelist --------------------------------------------
+
+  # ut_agg_from_ll
+ut_agg_from_ll <- function(data
+                           , var_measure
+                           , var_category
+                           , var_geo
+                           , var_demo_age
+                           , var_demo_re
+                           , var_demo_sex
+                           , var_date) {
+  # Note on arguments: 
+  # data: name of dataset as a character
+  # var_measure: needs to specify a numeric variable in the dataset with 1 indicating it should be counted
+  # var_category: can specify a numeric variable in the dataset with 1 indicating it should be counted or ""
+  # var_geo: can specify a character variable in dataset with geography values or ""
+  # var_demo_age: can specify a character variable in dataset with age values or ""
+  # var_demo_re: can specify a character variable in dataset with race/ethnicity values or ""
+  # var_demo_sex: can specify a character variable in dataset with sex values or ""
+  # var_date: needs to specify a date variable in dataset
+  
+  get(data) %>%
+    ## Rename the specified variables to general variables
+    rename(measure = {{var_measure}}
+           , date = {{var_date}}) %>%
+    mutate(category = if(var_category == "")  1 else get(var_category)
+           , geo_id = if(var_geo == "") "All" else get(var_geo)
+           , demo_age = if(var_demo_age == "") "All" else get(var_demo_age)
+           , demo_re = if(var_demo_re == "") "All" else get(var_demo_re)
+           , demo_sex = if(var_demo_sex == "") "All" else get(var_demo_sex)
+    ) %>%
+    ## Filter to relevant rows
+    filter(measure == 1 
+           & category == 1) %>%
+    ## Only include dates before today (but include NAs)
+    filter(date < Sys.Date()
+           | is.na(date)) %>%
+    ## Group by specified variables and aggregate
+    group_by(geo_id
+             , demo_age
+             , demo_re
+             , demo_sex
+             , date) %>%
+    summarise(n = sum(measure)
+              , .groups = "keep") %>%
+    ungroup() %>%
+    ## Add in geo_cat, measure, group variables; make sure geo_id is character
+    mutate(data_source = data
+           , measure_var = var_measure
+           , category_var = if(var_category == "")  "All" else var_category
+           , geo_var = if(var_geo == "") "All" else var_geo
+    ) %>%
+    ## Order variables
+    select(data_source
+           , measure_var
+           , category_var
+           , geo_var
+           , geo_id
+           , demo_age
+           , demo_re
+           , demo_sex
+           , date
+           , n)
+}
+
+
+
+
+
+
+# Calculations for aggregated datasets --------------------------------------------
+
+  # ut_join_with_shell_table
+ut_join_with_shell_table <- function(data
+                                  , vars_id){
+  tmp_date_range <- data.frame(
+    date = seq(min(data$date, na.rm = TRUE)
+               , max(data$date, na.rm = TRUE)
+               , by = "day")
+    , dummy = 1
+  )
+  
+  tmp_shell <- data %>%
+    ungroup %>%
+    select(all_of(vars_id)) %>%
+    distinct() %>%
+    mutate(dummy = 1) %>%
+    inner_join(tmp_date_range
+               , by = "dummy") %>%
+    select(-"dummy")
+  
+  data %>%
+    full_join(tmp_shell
+              , by = c(all_of(vars_id), "date"))
+  
+}
+
+# ut_agg_add_all_rows
+ut_agg_add_all_rows <- function(data
+                                       , var_add_rows
+                                       , vars_measure){
+  
+  # Get names of variables to group by
+  ## Start with all variables
+  tmp_vars_group <- names(data)
+  ## Subset those adding rows and measure variables
+  tmp_vars_group <- tmp_vars_group[tmp_vars_group %in% 
+                                     c(vars_measure, var_add_rows) == FALSE]
+  
+  # Aggregate for var that we're adding 'All' rows for
+  tmp_all_rows <- data %>%
+    group_by_at(all_of(tmp_vars_group)) %>%
+    summarise_at(vars(all_of(vars_measure))
+                 , ~sum(.x, na.rm = TRUE)) %>%
+    mutate(!!var_add_rows := "All")
+  
+  # Bind new rows to data
+  rbind(data, tmp_all_rows)
+  
+}
+
+
+  # ut_age_to_age_group 
+ut_age_to_age_group <- function(data
+                                , age_group_type
+                                , vars_measure){
+  
+  # Get names of variables to group by
+  ## Start with all variables + age_group
+  tmp_vars_group <- c(names(data), "age_group")
+  ## Subset those that are measures and age
+  tmp_vars_group <- tmp_vars_group[tmp_vars_group %in% 
+                                     c("age", vars_measure) == FALSE]
+  
+  # Get age group key
+  tmp_age_group_key <- dbGetQuery(con, paste0("select *
+                  from covid_ref.demo_", age_group_type))
+  
+  
+  tmp_age_group_breaks <- c(tmp_age_group_key$age_group_start, 9999)
+  
+  tmp_age_group_labels <- tmp_age_group_key$age_group
+  
+  data %>%
+    mutate(age_group = cut(age
+                           , breaks = tmp_age_group_breaks
+                           , include.lowest = T
+                           , right = F
+                           , labels = tmp_age_group_labels)) %>%
+    ungroup() %>%
+    select(-age) %>%
+    group_by_at(all_of(tmp_vars_group)) %>%
+    summarise_at(vars(all_of(vars_measure))
+                 , ~sum(.x, na.rm = TRUE))
+  
+}
+
+
+
+# ut_calculate_total_rolling7_rate7 
+ut_calculate_total_rolling7_rate7 <- function(data
+                                              , vars_measure){
+  
+  
+  mutate_at(data
+            , vars(all_of(vars_measure))
+            , list(rolling7 = 
+                     ~zoo::rollapplyr(.x
+                                      , width = 7
+                                      , sum
+                                      , na.rm = T
+                                      , partial = T))) %>%
+    mutate_at(vars(ends_with("rolling7"))
+              , list(rate7 = ~.x/pop * 100000))
+  
+}
+
+
+# ut_calculate_total_rolling14_rate7 
+ut_calculate_total_rolling14_rate7 <- function(data
+                                               , vars_measure){
+  
+  
+  mutate_at(data
+            , vars(all_of(vars_measure))
+            , list(rolling14 = 
+                     ~zoo::rollapplyr(.x
+                                      , width = 14
+                                      , sum
+                                      , na.rm = T
+                                      , partial = T))) %>%
+    mutate_at(vars(ends_with("rolling14"))
+              , list(rate7 = ~.x/pop * 100000 / 2))
+  
+}
+
+
+
+# ut_calculate_rates 
+ut_calculate_rates <- function(data
+                               , category){
+  
+  vars_to_mutate <- c(paste0(category, "_case_rolling7")
+                      , paste0(category, "_hosp_rolling7")
+                      , paste0(category, "_death_rolling7")
+  )
+  
+  var_denom <- paste0(category, "_denom_curr_rolling7")
+  
+  mutate_at(data
+            , vars(all_of(vars_to_mutate))
+            , list(rate7 = ~.x/get(var_denom) * 100000 * 7))
+}
+
+
+
+# ut_add_age_standardized_rows 
+ut_add_age_standardized_rows <- function(data
+                                         , vars_group_by =
+                                           c("geo_cat"
+                                             , "geo_id"
+                                             , "race_eth"
+                                             , "sex"
+                                             , "date")){
+  
+  
+  vars_to_summarise <- names(data) 
+  vars_to_summarise <- vars_to_summarise[vars_to_summarise %notin% 
+                                           c(vars_group_by, "age_group")]
+  
+  tmp_age_std_rows <- data %>%
+    filter(age_group != "All") %>%
+    inner_join(pop_age_group_weights
+               , by = "age_group") %>%
+    mutate_at(vars(contains("rate"))
+              , ~.x * weight_all) %>%
+    group_by_at(all_of(vars_group_by)) %>%
+    summarise_at(vars(all_of(vars_to_summarise))
+                 , sum
+                 , na.rm = TRUE
+    ) %>%
+    mutate(age_group = 'Age standardized')
+  
+  
+  rbind(data, tmp_age_std_rows)
+  
+}
+
+# ut_add_age_standardized_rows 
+ut_add_age_standardized_rows_vax <- function(data
+                                             , vars_group_by =
+                                               c("geo_cat"
+                                                 , "geo_id"
+                                                 , "race_eth"
+                                                 , "sex"
+                                                 , "date")){
+  
+  
+  vars_to_summarise <- names(data) 
+  vars_to_summarise <- vars_to_summarise[vars_to_summarise %notin% 
+                                           c(vars_group_by, "age_group")]
+  
+  tmp_age_std_rows <- data %>%
+    filter(age_group != "All") %>%
+    inner_join(pop_age_group_weights
+               , by = "age_group") %>%
+    mutate(weight = case_when(
+      date < "2021-12-03" ~ weight_no_0_11
+      , date >= "2021-12-03" ~ weight_no_0_4
+      , TRUE ~ weight_all)) %>%
+    mutate_at(vars(contains("rate"))
+              , ~.x * weight) %>%
+    group_by_at(all_of(vars_group_by)) %>%
+    summarise_at(vars(all_of(vars_to_summarise))
+                 , sum
+                 , na.rm = TRUE
+    ) %>%
+    mutate(age_group = 'Age standardized')
+  
+  
+  rbind(data, tmp_age_std_rows)
+  
+}
+
+
+# ut_suppress_lt_10_add_rand_noise 
+ut_suppress_lt_10_add_rand_noise <- function(data
+                                             , vars_measure) {
+  tmp_no_rand <- data %>%
+    filter(geo_cat == "County" 
+           & ((race_eth == "All" & sex == "All")
+              | (race_eth == "All" & age_group %in% c("All", "Age standardized"))
+              | (sex == "All" & age_group %in% c("All", "Age standardized")))
+           | (race_eth == "All" & sex == "All" & age_group == "All"))
+  
+  tmp <- data %>%
+    anti_join(tmp_no_rand, by = vars_id)
+  
+  tmp$noise <- rpois(nrow(tmp), lambda = 5)
+  
+  rand <- tmp %>%
+    mutate_at(vars(all_of(vars_measure)), ~case_when(.x < 10 & .x > 0 ~ NA_real_,
+                                                     TRUE ~ .x)) %>%
+    mutate(noise = case_when(noise >= 10 ~ as.integer(10),
+                             TRUE ~ noise)) %>%
+    mutate(noise = noise - 5) %>%
+    mutate_at(vars(all_of(vars_measure)), ~case_when(.x >= 10 ~ .x + noise,
+                                                     TRUE ~ .x)) %>%
+    select(-noise)
+  
+  bind_rows(tmp_no_rand, rand) 
+}
+
+# ut_calc_demo_re_multi --------------------------------------------
+# Calculate multi on standardized binary re fields
+# includes Other
+ut_calc_demo_re_multi <- function(data) {
+  
+  data.table::setDT(data)
+  
+  data <- data[, demo_re_multi :=rowSums(.SD, na.rm = TRUE), .SDcols = c("demo_re_aian", "demo_re_asian", "demo_re_black",
+                                                                         "demo_re_nhpi", "demo_re_other", "demo_re_white")]
+  
+  # make binary
+  data <- data[, ':=' (demo_re_multi = data.table::fifelse(demo_re_multi >1, 1,0))]
+  
+  data <- as.data.frame(data)
+  
+} # END OF FUNCTION
