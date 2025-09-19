@@ -1,0 +1,26 @@
+{
+    "id": "9702123E",
+    "path": "C:/GitHub/Public_Portfolio/visualizations/Process flow diagrams/scripts/setup_ref_flow.R",
+    "project_path": "scripts/setup_ref_flow.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1758257985477.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "29,54",
+        "scrollLine": "40"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1758264590,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1758264590264,
+    "read_only": false,
+    "read_only_alternatives": []
+}
