@@ -1,0 +1,193 @@
+
+---
+title: "Respiratory Data Pipeline Flow Markdown"
+subtitle: "Data Source: `r params$datasource`"
+date: "`r Sys.Date()`"
+note: "Adapted from APDE document: https://github.com/PHSKC-APDE/claims_data/blob/main/claims_db/phclaims/table_dependencies.Rmd"
+output: html_document
+params:
+  datasource_df: NULL
+  datasource: "TEST"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE)
+
+#### Pull in and set up data
+metadata_df <- if (!is.null(params$datasource_df)) {
+  params$datasource_df
+} else {
+  message("Running interactively, testing single datasource")
+  metadata_df0  %>% filter(data_source %in% "ESSENCE")
+}
+
+# Modify overall data
+metadata_df <- metadata_df %>%
+  mutate(to = case_when(
+    grepl("ai_|lhj|COVID_Staging", schema) ~ paste(schema, table, sep = "."),
+          is.na(parent_table) ~ NA,
+    TRUE ~ paste(schema, table, sep = " | ")),
+    from = case_when(
+      grepl("ai_|lhj|COVID_Staging", parent_schema) ~ paste(parent_schema, parent_table, sep = "."),
+      is.na(parent_table) ~ NA,
+      TRUE ~ paste(parent_schema, parent_table, sep = " | "))) %>% 
+  distinct()
+
+# Set up overall nodes
+nodes <- metadata_df %>%
+  distinct(to, schema, data_source) %>%
+  rename(node = to) %>%
+  bind_rows(., distinct(metadata_df, from, parent_schema, data_source) %>% 
+              filter(!is.na(from)) %>%
+              rename(node = from, schema = parent_schema))  %>%
+  arrange(node) %>%
+  # Manually define fill colors for schemas - If you don't define new schemas, colors will generate randomly
+  mutate(fillcolor = case_when(
+      # shared drive input schemas
+      schema == "file" ~ "Gray80",
+      schema == "archive" ~ "Gray65",
+      # External input schemas
+      schema == "dbo" ~ "BurlyWood",
+      schema == "gcd" ~ "DarkKhaki",
+      schema == "lhj" ~ "LightCyan3",
+      schema == "meo" ~ "SlateGray2",
+      schema == "redcapAPI" ~ "SteelBlue3",
+      schema == "url" ~ "DeepSkyBlue3",
+      schema == "wdrs.lhj" ~ "LightCyan4",
+      schema == "COVID_Staging" ~ "Thistle4",
+      # ref schemas
+      schema == "ai_ref" ~ "LightSkyBlue",
+      schema == "COVID_ref" ~ "LightSkyBlue",
+      # A&I ETL schemas
+      schema == "ai_raw" ~ "SeaGreen1",
+      schema == "ai_staging" ~ "SeaGreen3",
+      schema == "ai_prod" ~ "SeaGreen4",
+      # Tableau report schemas
+      schema == "reports_internal" ~ "RoyalBlue4",
+      schema == "reports_public" ~ "MidnightBlue",
+      TRUE ~ NA_character_),
+    #Add a random fillcolor if an undefined schema is present
+    fillcolor = if_else(is.na(fillcolor),
+                           rainbow_hcl(n_distinct(schema), start = 270, end = 600, c = 80, l = 65)[
+                             match(schema, unique(schema[is.na(fillcolor)]))
+                           ],
+                           fillcolor),
+    # Use lighter font color where fill is darker
+    fontcolor = case_when(
+      fillcolor %in% c("SeaGreen4", "RoyalBlue4", "MidnightBlue", "SteelBlue3", "DeepSkyBlue3", "Thistle4", "LightCyan4") ~ "Snow",
+      TRUE ~ "Black"),
+    # Break up schema and table into two lines for node labels
+    node_label = str_replace_all(node, c("\\." = "\\.\\\\n", " \\| " = "\\\\n"))
+  ) %>%
+  distinct(node, fillcolor, fontcolor, node_label, schema, data_source) %>%
+  mutate(id = seq(1, nrow(.)), .before = node)
+
+# Set up overall edges
+edges <- metadata_df %>%
+  filter(!is.na(to) & !is.na(from)) %>%
+  mutate(color = "Black",
+         penwidth = 1.5,
+         style = "solid",
+         edge_url = script_url,
+         label = str_wrap(script, width = 25)) %>%  # Add script column as tooltip
+  select(from, to, color, penwidth, style, edge_url, label) %>%
+  arrange(from) %>%
+  # Keep IDs to set up edges
+  left_join(., select(nodes, node, id),
+            by = c("from" = "node")) %>%
+  rename(from_id = id) %>%
+  left_join(., select(nodes, node, id),
+            by = c("to" = "node")) %>%
+  rename(to_id = id) %>%
+  mutate(edge = paste(from_id, to_id, sep = '->'),
+         # Need to be factors for DiagrammeR to work
+         from = factor(from, levels = nodes$node),
+         to = factor(to, levels = nodes$node))
+
+# Set up a function to create the Graphviz text
+gv_maker <- function(node_df, edge_df) {
+  gv_nodes <- glue_collapse(glue_data(node_df, "{id} [fillcolor = \"{fillcolor}\", 
+                                                      fontcolor = {fontcolor}, 
+                                                      label = '{node_label}', 
+                                                      tooltip = '{node_label}',
+                                                      margin = 0.1]"),
+                            sep = '\n')
+
+  gv_edges <- glue_collapse(glue_data(edge_df, "{edge} [color = {color}, 
+                                                        penwidth = {penwidth}, 
+                                                        style = {style},
+                                                        URL = '{edge_url}',
+                                                        tooltip = '{label}',
+                                                        fontsize = 16]"), 
+                            sep = '; ') # label = '{label}', # removed - makes larger diagrams hard to read
+
+  # Create legend dynamically from unique fillcolors and their labels
+  legend_items <- node_df %>%
+    distinct(fillcolor, schema) %>%
+    arrange(fillcolor) %>%
+    mutate(
+      row = (row_number()),
+      legend_node = paste0("kc", row_number()),
+      legend_label = paste0("k", row_number()),
+      legend_text = glue("{legend_node}[fillcolor = \"{fillcolor}\", label = \"\"];
+                         {legend_label}[shape=plaintext, style=solid, width=2, label = \"{schema}\r\", fontsize = 24];
+                         {legend_label}->{legend_node}[style = invis];")
+    ) %>%
+    group_by(row) %>%
+    summarise(text = paste(legend_text, collapse = '\n'), .groups = 'drop') %>%
+    pull(text) %>%
+    paste(collapse = "\n")
+
+  gv_txt <- glue('
+  digraph ""{{
+
+  ## Graph statement
+  graph [overlap = false, color = "transparent"];
+    
+  labelloc = t;
+  rankdir = LR;
+    
+  ## Set up overall formats
+  node[shape = rectangle, 
+       style = filled]
+
+  ## Set up legend
+  subgraph cluster_legend {{
+    label = "Color Legend";
+    fontsize = 36;
+    color = "White"
+    style = filled;
+    {legend_items}
+  }}
+  
+  ## Set up main graph
+  subgraph cluster_main {{
+    label = "Data Source: {params$datasource}";
+    fontsize = 48;
+    # Set up nodes
+    {gv_nodes}
+
+    # Set up edges
+    {gv_edges}
+  }}
+
+  }}')
+
+  return(gv_txt)
+}
+
+``` 
+
+```{r flow, echo=FALSE, out.width="100%", out.height="800px"}
+
+# Set up Graphviz text
+flow_gv <- gv_maker(node_df = nodes, edge_df = edges)
+
+# Make graph
+  flow_grviz <<- grViz(flow_gv, width = "100%", height = "800px")
+  
+  flow_grviz
+
+```
+
+

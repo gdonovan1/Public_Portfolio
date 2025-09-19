@@ -1,0 +1,16 @@
+schema,table,data_source,script,script_url,parent_schema,parent_table,filename,file_directory
+raw,hospital_a_raw_events,Hospital_A,ingest_raw_1_Hospital_A.R,https://github.com/mock_org/data_pipeline/blob/main/Hospital_A/ingest_raw_1.R,url,https://hospital-a.example.org/data/daily_reports.csv,daily_reports.csv,https://hospital-a.example.org/data/daily_reports.csv
+staging,hospital_a_staging_events,Hospital_A,raw_to_staging_1_Hospital_A.R,https://github.com/mock_org/data_pipeline/blob/main/Hospital_A/raw_to_staging_1.R,raw,hospital_a_raw_events,,
+prod,hospital_a_prod_events,Hospital_A,staging_to_prod_1_Hospital_A.R,https://github.com/mock_org/data_pipeline/blob/main/Hospital_A/staging_to_prod_1.R,staging,hospital_a_staging_events,,
+output,hospital_a_reports,Hospital_A,prod_to_output_1_Hospital_A.R,https://github.com/mock_org/data_pipeline/blob/main/Hospital_A/prod_to_output_1.R,prod,hospital_a_prod_events,hospital_a_reports.csv,/reports/Hospital_A
+raw,lab_b_raw_events,Lab_B,ingest_raw_1_Lab_B.R,https://github.com/mock_org/data_pipeline/blob/main/Lab_B/ingest_raw_1.R,file,\\shared\lab_b\raw\test_results.csv,\\shared\lab_b\raw\test_results.csv,\\shared\lab_b\raw\test_results.csv
+staging,lab_b_staging_events,Lab_B,raw_to_staging_1_Lab_B.R,https://github.com/mock_org/data_pipeline/blob/main/Lab_B/raw_to_staging_1.R,raw,lab_b_raw_events,,
+prod,lab_b_prod_events,Lab_B,staging_to_prod_1_Lab_B.R,https://github.com/mock_org/data_pipeline/blob/main/Lab_B/staging_to_prod_1.R,staging,lab_b_staging_events,,
+output,lab_b_reports,Lab_B,prod_to_output_1_Lab_B.R,https://github.com/mock_org/data_pipeline/blob/main/Lab_B/prod_to_output_1.R,prod,lab_b_prod_events,lab_b_reports.csv,/reports/Lab_B
+raw,survey_c_raw_events,Survey_C,ingest_raw_1_Survey_C.R,https://github.com/mock_org/data_pipeline/blob/main/Survey_C/ingest_raw_1.R,api,RedcapAPI,,RedcapAPI
+staging,survey_c_staging_events,Survey_C,raw_to_staging_1_Survey_C.R,https://github.com/mock_org/data_pipeline/blob/main/Survey_C/raw_to_staging_1.R,raw,survey_c_raw_events,,
+prod,survey_c_prod_events,Survey_C,staging_to_prod_1_Survey_C.R,https://github.com/mock_org/data_pipeline/blob/main/Survey_C/staging_to_prod_1.R,staging,survey_c_staging_events,,
+prod,integration_prod,Integration,integrate_1_Integration.R,https://github.com/mock_org/data_pipeline/blob/main/Integration/integrate_1.R,prod,hospital_a_prod_events,,
+prod,integration_prod,Integration,integrate_1_Integration.R,https://github.com/mock_org/data_pipeline/blob/main/Integration/integrate_1.R,prod,lab_b_prod_events,,
+prod,integration_prod,Integration,integrate_1_Integration.R,https://github.com/mock_org/data_pipeline/blob/main/Integration/integrate_1.R,prod,survey_c_prod_events,,
+output,integration_report,Integration,prod_to_output_1_Integration.R,https://github.com/mock_org/data_pipeline/blob/main/Integration/prod_to_output_1.R,prod,integration_prod_master,integration_report.csv,/reports/integration
