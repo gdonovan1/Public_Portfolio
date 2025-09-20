@@ -1,8 +1,8 @@
-# Data_Pipeline Documentation
+# Process Flow Diagram Documentation
 
 ## Description
-This folder contains code to generate process flow diagrams that outline the flow from inputs to outputs and the processing steps between. 
-Processed flow diagrams and other documentation regarding the data pipeline repository can be found here.
+This folder contains reproducible code to generate process flow diagrams that outline the flow from inputs to outputs and the processing steps between. 
+The folder contains mock metadata and outputs produced by the included code.
 
 ## Getting Started
 
@@ -10,21 +10,11 @@ Processed flow diagrams and other documentation regarding the data pipeline repo
 
 This repository includes the following key files and folders:
 
-- **Flow Diagrams/**  
+- **Output/**  
   Folder containing processed SVG flow diagrams used for pipeline documentation. Includes a subfolder with detailed diagrams down to the dashboard tab-level detail.
 
-- **Create_table_dependency.R**  
-  R script for extracting input/output table relationships from R scripts to generate a data dependency table for flow diagram generation.
-  - **Detailed instructions to run script can be found here**: \\kc.kingcounty.lcl\DPH\Prevention\CD-Epi-Imms\AI\Analyses_reports\Respiratory Virus\Data Pipeline Workflow Diagrams\Table Generation for Flow Diagrams.docx
-
-- **ref.data_pipeline_table_dependencies.csv**  
-  CSV reference of pipeline table dependency metadata for use in flow diagram generation. This is the primary table to update if there are changes to pipeline inputs or outputs.
-
-- **ref.data_pipeline_tabledep_all.csv**  
-  Alternate version of pipeline table dependencies metadata, generated from create_table_dependency.R.
-
-- **ref.production_table_dependencies.csv**  
-  CSV reference file focused on production-level table dependencies related to Tableau dashboards. This is the table to update if there are changes to Tableau dashboard inputs, even to the tab level.
+- **scripts/ref.mock_table_dependencies.csv**  
+  CSV reference of mock pipeline table dependency metadata for use in sample flow diagram generation. This is the primary table to customize as needed for diagram inputs.
 
 - **setup_ref_flow.R**  
   R script to process dependency data and generate formatted flow data for visualization. Generates both dynamic network diagram and static flow diagram for reference.
@@ -37,10 +27,10 @@ This repository includes the following key files and folders:
 
 ### How to access and use data_pipeline flow diagrams
 - **SVG images** - created to be embedded in GitHub documentation
-  - **Found in** the [Flow diagram subfolder](https://github.com/PHSKC-Analytics-Informatics/Data_Pipeline/tree/main/Documentation/flow_diagrams) in this repository.
+  - **Found in** the output subfolder in this repository.
   - To open a zoomable image, right click and press "i" key. Then zoom by pressing ctrl + mousescroll. Pan by centerclicking the scroll button on mouse or by using keyboard arrows.
 - **Interactive network diagrams**
-  -  **Found in** CIFFS drive here: 📂 \\kc.kingcounty.lcl\DPH\Prevention\CD-Epi-Imms\AI\Analyses_reports\Respiratory Virus\Data Pipeline Workflow Diagrams
+  -  **Found in** CIFFS drive here: 📂
   - **How to use interactive network diagrams**:
     - This folder has network diagram html files for EACH data source. Open flow_diagram_ALL.html to view the combined diagram with ALL datasources.
     - Some definitions:
@@ -52,7 +42,7 @@ This repository includes the following key files and folders:
     - **The purpose** of this interactive dashboard is to really scrutinize data pipelines, identifying areas for improvements or to identify dependencies for troubleshooting. 
 
   ### How to update data_pipeline flow diagrams
-  1. Update ref.data_pipeline_table_dependencies.csv and ref.production_table_dependencies.csv with any changes to data pipeline inputs or outputs or routine dashboards that use data_pipeline products.
+  1. Update ref.mock_table_dependencies.csv and ref.production_table_dependencies.csv with any changes to data pipeline inputs or outputs or routine dashboards that use data_pipeline products.
      - Important notes:
        - Ensure that new rows have a value for every variable.
        - If a new schema is added that previously did not exist, a very unpleasant fillcolor will be added to represent it. Manually hardcode new schema fillcolors in setup_ref_flow_markdown.Rmd to avoid this.
